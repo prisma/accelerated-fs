@@ -1,0 +1,86 @@
+{
+  "name": "s3-bun-cached-fs",
+  "version": "0.1.0",
+  "description": "Pure TypeScript write-through cached virtual filesystem for S3, designed for Bun and constrained compute environments.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "demo:core": "bun demos/core.ts",
+    "demo:mastra": "bun demos/mastra.ts",
+    "demo:just-bash": "bun demos/just-bash.ts",
+    "demo:flue": "bun demos/flue.ts",
+    "demo:all": "bun run demo:core && bun run demo:mastra && bun run demo:just-bash && bun run demo:flue",
+    "fmt": "bunx prettier --write ."
+  },
+  "keywords": [
+    "accelerated-fs",
+    "adapter",
+    "agent-filesystem",
+    "bun",
+    "cache",
+    "filesystem",
+    "flue",
+    "just-bash",
+    "mastra",
+    "plugin",
+    "s3",
+    "sandbox",
+    "serverless",
+    "sqlite",
+    "workspace"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "bun-types": ">=1.2.0",
+    "just-bash": ">=3.0.0",
+    "@flue/runtime": ">=0.0.0"
+  },
+  "dependencies": {
+    "@prisma/compute": "^0.1.0-beta.0"
+  },
+  "devDependencies": {
+    "typescript": ">=5.5.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./core": {
+      "types": "./src/core.ts",
+      "import": "./src/core.ts"
+    },
+    "./mastra": {
+      "types": "./src/mastra/index.ts",
+      "import": "./src/mastra/index.ts"
+    },
+    "./flue": {
+      "types": "./src/flue/index.ts",
+      "import": "./src/flue/index.ts"
+    },
+    "./just-bash": {
+      "types": "./src/just-bash/index.ts",
+      "import": "./src/just-bash/index.ts"
+    },
+    "./stores/local-object-store": {
+      "types": "./src/stores/local-object-store.ts",
+      "import": "./src/stores/local-object-store.ts"
+    },
+    "./stores/s3-object-store": {
+      "types": "./src/stores/s3-object-store.ts",
+      "import": "./src/stores/s3-object-store.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependenciesMeta": {
+    "just-bash": {
+      "optional": true
+    },
+    "@flue/runtime": {
+      "optional": true
+    }
+  }
+}
