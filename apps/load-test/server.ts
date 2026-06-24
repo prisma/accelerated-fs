@@ -57,6 +57,24 @@ interface BenchmarkOptions {
   keepAwakeTimeoutMs: number;
 }
 
+interface StorageTarget {
+  bucket: string;
+  region: string;
+  endpoint?: string;
+  prefixBase: string;
+  provisionedBucket?: R2ProvisionedBucket;
+}
+
+interface R2ProvisionedBucket {
+  name: string;
+  accountId: string;
+  endpoint: string;
+  locationHint?: string;
+  jurisdiction?: string;
+  createdAt: string;
+  result?: unknown;
+}
+
 interface PhaseTiming {
   startedAt: string;
   completedAt: string;
@@ -89,6 +107,7 @@ interface BenchmarkJob {
   startedAt: string;
   completedAt?: string;
   options: BenchmarkOptions;
+  storage?: StorageTarget;
   progress: Progress;
   results: SizeResult[];
   events: EventLog[];
@@ -133,6 +152,7 @@ Bun.serve({
           reads: READ_COUNT,
           writes: WRITE_COUNT,
           sizes: FULL_SIZES,
+          storageProvisioner: process.env.LOAD_TEST_STORAGE_PROVISIONER ?? "static",
         },
       });
     }
@@ -188,6 +208,7 @@ function createJob(options: BenchmarkOptions): BenchmarkJob {
 
 async function runBenchmarkJob(job: BenchmarkJob): Promise<void> {
   try {
+    job.storage = await prepareStorageTarget(job);
     for (const size of job.options.sizes) {
       const result = await runSizeBenchmark(job, size);
       job.results.push(result);
@@ -208,15 +229,16 @@ async function runSizeBenchmark(job: BenchmarkJob, size: DataSize): Promise<Size
   const fileCount = Math.ceil(size.totalBytes / FILE_BYTES);
   const actualBytes = fileCount * FILE_BYTES;
   const batches = Math.ceil(fileCount / job.options.batchFiles);
+  const storage = job.storage ?? await prepareStorageTarget(job);
   const prefix = [
-    process.env.AFS_PREFIX_BASE ?? "accelerated-fs/compute",
+    storage.prefixBase,
     APP,
     job.id,
     size.label,
   ].join("/");
   const cacheRoot = path.join("/tmp", "accelerated-fs", APP, job.id, size.label);
   const manager = new S3CachedFsManagerImpl({ cacheRoot, totalCacheBytes: CACHE_BYTES });
-  const mountConfig = createLoadTestMountConfig(`${APP}-${size.label}-${job.id}`, prefix);
+  const mountConfig = createLoadTestMountConfig(`${APP}-${size.label}-${job.id}`, prefix, storage);
   let result: Omit<SizeResult, "closeMs"> | null = null;
 
   addEvent(job, "size started", { label: size.label, fileCount, actualBytes, prefix });
@@ -378,13 +400,107 @@ async function timePhase<T>(fn: () => Promise<T>): Promise<PhaseTiming & { value
   return { startedAt, completedAt: new Date().toISOString(), ms, value };
 }
 
-function createLoadTestMountConfig(name: string, prefix: string): MountConfig {
+async function prepareStorageTarget(job: BenchmarkJob): Promise<StorageTarget> {
+  if (job.storage) return job.storage;
+
+  const prefixBase = process.env.AFS_PREFIX_BASE ?? "accelerated-fs/compute";
+  const provisioner = (process.env.LOAD_TEST_STORAGE_PROVISIONER ?? "static").toLowerCase();
+
+  if (provisioner === "r2-one-time-bucket" || provisioner === "r2") {
+    const bucket = await provisionR2Bucket(job);
+    const target: StorageTarget = {
+      bucket: bucket.name,
+      region: process.env.AFS_REGION ?? "auto",
+      endpoint: bucket.endpoint,
+      prefixBase,
+      provisionedBucket: bucket,
+    };
+    addEvent(job, "storage target ready", {
+      provisioner,
+      bucket: target.bucket,
+      endpoint: target.endpoint,
+      locationHint: bucket.locationHint ?? null,
+      jurisdiction: bucket.jurisdiction ?? null,
+    });
+    job.storage = target;
+    return target;
+  }
+
+  if (provisioner !== "static") {
+    throw new Error(`Unknown LOAD_TEST_STORAGE_PROVISIONER "${provisioner}"`);
+  }
+
+  const target: StorageTarget = {
+    bucket: requiredEnv("AFS_BUCKET"),
+    region: process.env.AFS_REGION ?? "auto",
+    prefixBase,
+  };
+  const endpoint = process.env.AFS_ENDPOINT;
+  if (endpoint) target.endpoint = endpoint;
+  addEvent(job, "storage target ready", { provisioner, bucket: target.bucket, endpoint: target.endpoint ?? null });
+  job.storage = target;
+  return target;
+}
+
+async function provisionR2Bucket(job: BenchmarkJob): Promise<R2ProvisionedBucket> {
+  const endpoint = requiredEnv("AFS_ENDPOINT");
+  const accountId = process.env.R2_ACCOUNT_ID ?? parseR2AccountId(endpoint);
+  const token = requiredEnv("R2_API_TOKEN");
+  const locationHint = optionalLowerEnv("R2_LOCATION_HINT");
+  const jurisdiction = optionalLowerEnv("R2_JURISDICTION");
+  const bucket = makeR2BucketName(job.id);
+  const body: Record<string, string> = { name: bucket };
+  if (locationHint) body.locationHint = locationHint;
+  if (process.env.R2_STORAGE_CLASS) body.storageClass = process.env.R2_STORAGE_CLASS;
+
+  setProgress(job, {
+    stage: "provisioning-storage",
+    completed: 0,
+    total: job.options.sizes.length,
+    detail: `creating R2 bucket ${bucket}`,
+  });
+  addEvent(job, "creating r2 bucket", {
+    bucket,
+    accountId,
+    locationHint: locationHint ?? null,
+    jurisdiction: jurisdiction ?? null,
+  });
+
+  const headers = new Headers({
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  });
+  if (jurisdiction) headers.set("cf-r2-jurisdiction", jurisdiction);
+
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const responseBody = await response.json().catch(() => null) as unknown;
+  if (!response.ok || !isCloudflareSuccess(responseBody)) {
+    throw new Error(`Failed to create R2 bucket ${bucket}: ${response.status} ${formatCloudflareError(responseBody)}`);
+  }
+
+  const result = isObject(responseBody) ? responseBody.result : undefined;
+  return {
+    name: bucket,
+    accountId,
+    endpoint,
+    ...(locationHint ? { locationHint } : {}),
+    ...(jurisdiction ? { jurisdiction } : {}),
+    createdAt: new Date().toISOString(),
+    result,
+  };
+}
+
+function createLoadTestMountConfig(name: string, prefix: string, storage: StorageTarget): MountConfig {
   const config: MountConfig = {
     name,
     mode: "readwrite",
-    bucket: requiredEnv("AFS_BUCKET"),
+    bucket: storage.bucket,
     prefix,
-    region: process.env.AFS_REGION ?? "auto",
+    region: storage.region,
     accessKeyId: requiredEnv("AFS_ACCESS_KEY_ID"),
     secretAccessKey: requiredEnv("AFS_SECRET_ACCESS_KEY"),
     cacheBytes: CACHE_BYTES,
@@ -395,8 +511,7 @@ function createLoadTestMountConfig(name: string, prefix: string): MountConfig {
     lockTtlMs: numberEnv("LOAD_TEST_LOCK_TTL_MS", 60_000),
     lockRenewMs: numberEnv("LOAD_TEST_LOCK_RENEW_MS", 20_000),
   };
-  const endpoint = process.env.AFS_ENDPOINT;
-  if (endpoint) config.endpoint = endpoint;
+  if (storage.endpoint) config.endpoint = storage.endpoint;
   return config;
 }
 
@@ -486,6 +601,11 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+function optionalLowerEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value || undefined;
+}
+
 function numberEnv(name: string, fallback: number): number {
   const value = process.env[name];
   if (!value) return fallback;
@@ -516,6 +636,42 @@ function hashLabel(value: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function parseR2AccountId(endpoint: string): string {
+  const host = new URL(endpoint).hostname;
+  const accountId = host.split(".")[0];
+  if (!accountId || accountId === "r2") throw new Error(`Could not parse R2 account id from AFS_ENDPOINT ${endpoint}`);
+  return accountId;
+}
+
+function makeR2BucketName(jobId: string): string {
+  const prefix = (process.env.R2_BUCKET_PREFIX ?? "afs-bench").toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const compactJobId = jobId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const bucket = `${prefix}-${compactJobId}`.replace(/-+/g, "-").replace(/^-|-$/g, "");
+  if (bucket.length < 3 || bucket.length > 64) {
+    throw new Error(`Generated R2 bucket name "${bucket}" must be between 3 and 64 characters`);
+  }
+  return bucket;
+}
+
+function isCloudflareSuccess(value: unknown): boolean {
+  return isObject(value) && value.success === true;
+}
+
+function formatCloudflareError(value: unknown): string {
+  if (!isObject(value)) return String(value);
+  const errors = Array.isArray(value.errors) ? value.errors : [];
+  const messages = errors.map(error => {
+    if (!isObject(error)) return String(error);
+    const code = typeof error.code === "number" ? `${error.code}: ` : "";
+    return `${code}${String(error.message ?? "unknown error")}`;
+  });
+  return messages.length > 0 ? messages.join("; ") : JSON.stringify(value);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function mulberry32(seed: number): () => number {

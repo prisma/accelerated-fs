@@ -17,6 +17,13 @@
  *   AFS_ENDPOINT
  *   AFS_PREFIX_BASE
  *
+ * To create a one-time Cloudflare R2 bucket for each benchmark job:
+ *
+ *   LOAD_TEST_STORAGE_PROVISIONER=r2-one-time-bucket
+ *   R2_API_TOKEN
+ *   R2_ACCOUNT_ID
+ *   R2_BUCKET_PREFIX
+ *
  * Benchmark defaults:
  *
  *   cache cap: 100 MiB
