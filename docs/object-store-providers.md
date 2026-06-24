@@ -164,6 +164,7 @@ The core tests cover these semantics against `LocalObjectStore`; provider integr
 The benchmark app runs on Prisma Compute in Frankfurt (`eu-central-1`) and mounts the same filesystem implementation against two S3-compatible providers:
 
 - Tigris: global bucket, endpoint `https://t3.storage.dev`, region `auto`
+- Tigris instant retrieval archive bucket, endpoint `https://t3.storage.dev`, region `auto`
 - Cloudflare R2: WEUR bucket, account endpoint, region `auto`
 
 Both deployments used the same Prisma Compute app code, the same benchmark seed, a `100 MiB` local cache cap, `4 MiB` pack objects, and `10 KiB` files. The benchmark first inserts the requested dataset, then runs `1000` random reads and `1000` random writes as one intermingled serial operation stream. The initial insert is batched at `400` files per transaction so the setup phase measures bulk creation instead of one remote metadata commit per file. The mixed phase is intentionally serial and performs one filesystem operation at a time.
@@ -178,6 +179,9 @@ Benchmark code:
 | Tigris | 50 MiB | 5,120 | 3.341s | 103.953s |
 | Tigris | 500 MiB | 51,200 | 34.031s | 186.718s |
 | Tigris | 5 GiB | 524,288 | 320.265s | 254.835s |
+| Tigris instant retrieval archive | 50 MiB | 5,120 | 3.707s | 163.481s |
+| Tigris instant retrieval archive | 500 MiB | 51,200 | 33.544s | 251.996s |
+| Tigris instant retrieval archive | 5 GiB | 524,288 | 367.727s | 316.926s |
 | Cloudflare R2 | 50 MiB | 5,120 | 8.262s | 541.766s |
 | Cloudflare R2 | 500 MiB | 51,200 | 108.684s | 735.996s |
 | Cloudflare R2 | 5 GiB | 524,288 | 1003.271s | 899.608s |
