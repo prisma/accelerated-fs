@@ -30,6 +30,7 @@
  *   file size: 10 KiB
  *   data sizes: 50 MiB, 500 MiB, 5 GiB
  *   mixed phase: 1000 random reads and 1000 random writes, serially awaited
+ *   read latency: min, max, average, p50, p95, and p99 for the mixed phase
  *
  * Endpoints:
  *

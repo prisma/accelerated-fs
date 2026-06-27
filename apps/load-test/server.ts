@@ -81,6 +81,21 @@ interface PhaseTiming {
   ms: number;
 }
 
+interface LatencyStats {
+  count: number;
+  minMs: number;
+  maxMs: number;
+  avgMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+}
+
+interface MixedSummary {
+  checksum: number;
+  readLatency: LatencyStats;
+}
+
 interface SizeResult {
   label: string;
   prefix: string;
@@ -97,6 +112,7 @@ interface SizeResult {
     reads: number;
     writes: number;
     checksum: number;
+    readLatency: LatencyStats;
   };
   closeMs: number;
 }
@@ -259,7 +275,7 @@ async function runSizeBenchmark(job: BenchmarkJob, size: DataSize): Promise<Size
       await insertData(job, fs, size.label, fileCount, job.options.batchFiles);
     });
 
-    const { value: checksum, ...mixed } = await timePhase(async () => {
+    const { value: mixedSummary, ...mixed } = await timePhase(async () => {
       return await runMixedOperations(job, fs, size.label, fileCount, job.options.seed);
     });
 
@@ -279,7 +295,8 @@ async function runSizeBenchmark(job: BenchmarkJob, size: DataSize): Promise<Size
         operations: READ_COUNT + WRITE_COUNT,
         reads: READ_COUNT,
         writes: WRITE_COUNT,
-        checksum,
+        checksum: mixedSummary.checksum,
+        readLatency: mixedSummary.readLatency,
       },
     };
   } finally {
@@ -303,6 +320,7 @@ async function runSizeBenchmark(job: BenchmarkJob, size: DataSize): Promise<Size
         label: size.label,
         insertMs: Math.round(result.insert.ms),
         mixedMs: Math.round(result.mixed.ms),
+        readP95Ms: Math.round(result.mixed.readLatency.p95Ms),
         closeMs: Math.round(closeMs),
       });
       return { ...result, closeMs };
@@ -349,17 +367,20 @@ async function runMixedOperations(
   sizeLabel: string,
   fileCount: number,
   seed: number,
-): Promise<number> {
+): Promise<MixedSummary> {
   const operations = buildMixedOperations(fileCount, seed ^ hashLabel(sizeLabel));
   let checksum = 0;
   let reads = 0;
   let writes = 0;
   let lastProgressAt = 0;
+  const readLatencies: number[] = [];
 
   for (let index = 0; index < operations.length; index++) {
     const operation = operations[index]!;
     if (operation.kind === "read") {
+      const readStart = performance.now();
       const bytes = await fs.readFile(filePath(operation.fileIndex));
+      readLatencies.push(performance.now() - readStart);
       if (bytes.byteLength !== FILE_BYTES) {
         throw new Error(`Read ${bytes.byteLength} bytes from ${filePath(operation.fileIndex)}, expected ${FILE_BYTES}`);
       }
@@ -389,7 +410,7 @@ async function runMixedOperations(
     throw new Error(`Mixed operation count mismatch: ${reads} reads and ${writes} writes`);
   }
 
-  return checksum;
+  return { checksum, readLatency: summarizeLatency(readLatencies) };
 }
 
 async function timePhase<T>(fn: () => Promise<T>): Promise<PhaseTiming & { value: T }> {
@@ -636,6 +657,27 @@ function hashLabel(value: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function summarizeLatency(samples: number[]): LatencyStats {
+  if (samples.length === 0) throw new Error("Cannot summarize an empty latency sample set");
+  const sorted = [...samples].sort((left, right) => left - right);
+  const sum = sorted.reduce((total, value) => total + value, 0);
+  return {
+    count: sorted.length,
+    minMs: sorted[0]!,
+    maxMs: sorted[sorted.length - 1]!,
+    avgMs: sum / sorted.length,
+    p50Ms: percentile(sorted, 0.5),
+    p95Ms: percentile(sorted, 0.95),
+    p99Ms: percentile(sorted, 0.99),
+  };
+}
+
+function percentile(sortedSamples: number[], percentileValue: number): number {
+  if (sortedSamples.length === 0) throw new Error("Cannot calculate percentile for an empty sample set");
+  const index = Math.min(sortedSamples.length - 1, Math.max(0, Math.ceil(percentileValue * sortedSamples.length) - 1));
+  return sortedSamples[index]!;
 }
 
 function parseR2AccountId(endpoint: string): string {
